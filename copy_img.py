@@ -4,11 +4,12 @@ import multiprocessing
 import os
 import shutil
 import sqlite3
+from typing import Union
 
 
 class DatasetBase(abc.ABC):
     @abc.abstractmethod
-    def get_query(self, tag: str) -> str:
+    def get_query(self, tags: list[str], ng_tags: Union[list[str], None]) -> str:
         pass
 
     @abc.abstractmethod
@@ -17,10 +18,22 @@ class DatasetBase(abc.ABC):
     ) -> str:
         pass
 
+    def get_tags_query(
+        self, tags: list[str], ng_tags: Union[list[str], None], tag_column: str
+    ) -> str:
+        tag_query = " AND ".join([f"{tag_column} LIKE '%{tag}%'" for tag in tags])
+        if ng_tags is None:
+            return tag_query
+        ng_tag_query = " AND ".join(
+            [f"{tag_column} NOT LIKE '%{tag}%'" for tag in ng_tags]
+        )
+        return f"{tag_query} AND {ng_tag_query}"
+
 
 class Danbooru(DatasetBase):
-    def get_query(self, tag: str) -> str:
-        return f"SELECT id, md5, file_ext FROM posts WHERE tag_string LIKE '%{tag}%'"
+    def get_query(self, tags: list[str], ng_tags: Union[list[str], None]) -> str:
+        tags_query = self.get_tags_query(tags, ng_tags, "tag_string")
+        return f"SELECT id, md5, file_ext FROM posts WHERE {tags_query}"
 
     def get_image_path(
         self, img_dir: str, id: int, filename: str, extension: str
@@ -33,8 +46,9 @@ class GalleryDl(DatasetBase):
         super().__init__()
         self.category = category
 
-    def get_query(self, tag: str) -> str:
-        return f"SELECT id, filename, extension FROM images WHERE tags LIKE '%{tag}%'"
+    def get_query(self, tags: list[str], ng_tags: list[str]) -> str:
+        tags_query = self.get_tags_query(tags, ng_tags, "tags")
+        return f"SELECT id, filename, extension FROM images WHERE {tags_query}"
 
     def get_image_path(
         self, img_dir: str, id: int, filename: str, extension: str
@@ -48,8 +62,9 @@ def main():
         "-m", "--mode", required=True, help="Dataset mode (danbooru or gallery-dl)"
     )
     parser.add_argument(
-        "-t", "--tag", required=True, help="Tag to be used to filter the files"
+        "-t", "--tags", required=True, nargs="+", help="Tags to be included"
     )
+    parser.add_argument("-n", "--ng-tags", nargs="+", help="Tags to be excluded")
     parser.add_argument(
         "-d", "--db", required=True, help="Database file of the dataset"
     )
@@ -67,20 +82,27 @@ def main():
     else:
         raise ValueError(f"Unknown mode: {args.mode}")
 
-    copy_files(dataset, args.tag, args.db, args.img, args.out)
+    copy_files(dataset, args.tags, args.ng_tags, args.db, args.img, args.out)
 
 
 def copy_files(
-    dataset: DatasetBase, tag: str, db_path: str, img_dir: str, out_dir: str
+    dataset: DatasetBase,
+    tags: list[str],
+    ng_tags: Union[list[str], None],
+    db_path: str,
+    img_dir: str,
+    out_dir: str,
 ):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    cursor.execute(dataset.get_query(tag))
+    cursor.execute(dataset.get_query(tags, ng_tags))
+    total_record_count = 0
     while True:
         records = cursor.fetchmany(10000)
         if not records:
             break
         print(f"Copying {len(records)} files...")
+        total_record_count += len(records)
         with multiprocessing.Pool() as pool:
             pool.starmap(
                 copy_file,
@@ -90,7 +112,7 @@ def copy_files(
                 ],
             )
     conn.close()
-    print(f"{len(records)} files copied.")
+    print(f"{total_record_count} files copied in total.")
 
 
 def copy_file(
