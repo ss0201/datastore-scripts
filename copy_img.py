@@ -95,7 +95,10 @@ def copy_files(
 ):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    cursor.execute(dataset.get_query(tags, ng_tags))
+    query = dataset.get_query(tags, ng_tags)
+    print(query)
+    cursor.execute(query)
+
     total_record_count = 0
     while True:
         records = cursor.fetchmany(10000)
