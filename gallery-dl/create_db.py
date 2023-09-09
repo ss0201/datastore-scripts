@@ -22,6 +22,9 @@ def register_files(img_dir: str, db_file: str) -> None:
     try:
         cursor = db_conn.cursor()
         for src_json_path in json_files:
+            image_file_path = os.path.splitext(src_json_path)[0]
+            if not os.path.exists(image_file_path):
+                continue
             register_file(src_json_path, cursor)
         db_conn.commit()
     except Exception as e:
