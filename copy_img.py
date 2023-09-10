@@ -4,12 +4,29 @@ import multiprocessing
 import os
 import shutil
 import sqlite3
-from typing import Union
+from typing import Optional
 
 
 class DatasetBase(abc.ABC):
+    @property
     @abc.abstractmethod
-    def get_query(self, tags: list[str], ng_tags: Union[list[str], None]) -> str:
+    def tag_column(self) -> str:
+        pass
+
+    @property
+    @abc.abstractmethod
+    def extension_column(self) -> str:
+        pass
+
+    @abc.abstractmethod
+    def get_query(
+        self,
+        tags: list[str],
+        ng_tags: Optional[list[str]],
+        ratings: Optional[list[str]],
+        extensions: Optional[list[str]],
+        size: Optional[int],
+    ) -> str:
         pass
 
     @abc.abstractmethod
@@ -18,22 +35,64 @@ class DatasetBase(abc.ABC):
     ) -> str:
         pass
 
-    def get_tags_query(
-        self, tags: list[str], ng_tags: Union[list[str], None], tag_column: str
-    ) -> str:
-        tag_query = " AND ".join([f"{tag_column} LIKE '%{tag}%'" for tag in tags])
+    def build_tags_query(self, tags: list[str], ng_tags: Optional[list[str]]) -> str:
+        tag_query = " AND ".join([f"{self.tag_column} LIKE '%{tag}%'" for tag in tags])
         if ng_tags is None:
             return tag_query
         ng_tag_query = " AND ".join(
-            [f"{tag_column} NOT LIKE '%{tag}%'" for tag in ng_tags]
+            [f"{self.tag_column} NOT LIKE '%{tag}%'" for tag in ng_tags]
         )
         return f"{tag_query} AND {ng_tag_query}"
 
+    def build_filter_query(
+        self,
+        ratings: Optional[list[str]],
+        extensions: Optional[list[str]],
+        size: Optional[int],
+    ) -> str:
+        if ratings is None:
+            ratings_filter = "TRUE"
+        else:
+            ratings_string = ", ".join([f'"{r}"' for r in ratings])
+            ratings_filter = f"rating IN ({ratings_string})"
+
+        if extensions is None:
+            extensions_filter = "TRUE"
+        else:
+            extensions_string = ", ".join([f'"{e}"' for e in extensions])
+            extensions_filter = f"{self.extension_column} IN ({extensions_string})"
+
+        if size is None:
+            size_filter = "TRUE"
+        else:
+            size_filter = f"width >= {size} AND height >= {size}"
+
+        return f"({extensions_filter}) AND ({ratings_filter}) AND ({size_filter})"
+
 
 class Danbooru(DatasetBase):
-    def get_query(self, tags: list[str], ng_tags: Union[list[str], None]) -> str:
-        tags_query = self.get_tags_query(tags, ng_tags, "tag_string")
-        return f"SELECT id, md5, file_ext FROM posts WHERE {tags_query}"
+    @property
+    def tag_column(self) -> str:
+        return "tag_string"
+
+    @property
+    def extension_column(self) -> str:
+        return "file_ext"
+
+    def get_query(
+        self,
+        tags: list[str],
+        ng_tags: Optional[list[str]],
+        ratings: Optional[list[str]],
+        extensions: Optional[list[str]],
+        size: Optional[int],
+    ) -> str:
+        tags_query = self.build_tags_query(tags, ng_tags)
+        optional_query = self.build_filter_query(ratings, extensions, size)
+        return f"""
+        SELECT id, md5, {self.extension_column} FROM posts
+        WHERE {tags_query} AND {optional_query}
+        """
 
     def get_image_path(
         self, img_dir: str, id: int, filename: str, extension: str
@@ -41,14 +100,33 @@ class Danbooru(DatasetBase):
         return f"{img_dir}/{filename[:2]}/{filename}.{extension}"
 
 
-class GalleryDl(DatasetBase):
+class Gelbooru(DatasetBase):
+    @property
+    def tag_column(self) -> str:
+        return "tags"
+
+    @property
+    def extension_column(self) -> str:
+        return "extension"
+
     def __init__(self, category) -> None:
         super().__init__()
         self.category = category
 
-    def get_query(self, tags: list[str], ng_tags: list[str]) -> str:
-        tags_query = self.get_tags_query(tags, ng_tags, "tags")
-        return f"SELECT id, filename, extension FROM images WHERE {tags_query}"
+    def get_query(
+        self,
+        tags: list[str],
+        ng_tags: Optional[list[str]],
+        rating: Optional[list[str]],
+        extensions: Optional[list[str]],
+        size: Optional[int],
+    ) -> str:
+        tags_query = self.build_tags_query(tags, ng_tags)
+        filter_query = self.build_filter_query(rating, extensions, size)
+        return f"""
+        SELECT id, md5, {self.extension_column} FROM images
+        WHERE {tags_query} AND {filter_query}
+        """
 
     def get_image_path(
         self, img_dir: str, id: int, filename: str, extension: str
@@ -65,6 +143,14 @@ def main():
         "-t", "--tags", required=True, nargs="+", help="Tags to be included"
     )
     parser.add_argument("-n", "--ng-tags", nargs="+", help="Tags to be excluded")
+    parser.add_argument("-r", "--ratings", nargs="+", help="Ratings")
+    parser.add_argument("-e", "--extensions", nargs="+", help="Extensions")
+    parser.add_argument(
+        "-s",
+        "--size",
+        type=int,
+        help="Minimum image size (width and height)",
+    )
     parser.add_argument(
         "-d", "--db", required=True, help="Database file of the dataset"
     )
@@ -78,24 +164,38 @@ def main():
     elif args.mode == "gallery-dl":
         if args.category is None:
             raise ValueError("Category name is required for gallery-dl mode")
-        dataset = GalleryDl(args.category)
+        # TODO: Support other datasets
+        dataset = Gelbooru(args.category)
     else:
         raise ValueError(f"Unknown mode: {args.mode}")
 
-    copy_files(dataset, args.tags, args.ng_tags, args.db, args.img, args.out)
+    copy_files(
+        dataset,
+        args.tags,
+        args.ng_tags,
+        args.ratings,
+        args.extensions,
+        args.size,
+        args.db,
+        args.img,
+        args.out,
+    )
 
 
 def copy_files(
     dataset: DatasetBase,
     tags: list[str],
-    ng_tags: Union[list[str], None],
+    ng_tags: Optional[list[str]],
+    ratings: Optional[list[str]],
+    extensions: Optional[list[str]],
+    size: Optional[int],
     db_path: str,
     img_dir: str,
     out_dir: str,
 ):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    query = dataset.get_query(tags, ng_tags)
+    query = dataset.get_query(tags, ng_tags, ratings, extensions, size)
     print(query)
     cursor.execute(query)
 
