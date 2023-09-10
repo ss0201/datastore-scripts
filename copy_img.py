@@ -247,7 +247,8 @@ def copy_file(
     os.makedirs(out_dir, exist_ok=True)
     shutil.copy2(src_path, out_dir)
     if output_tags:
-        with open(f"{out_dir}/{filename}.txt", "w") as f:
+        filename_without_extension = os.path.splitext(os.path.basename(src_path))[0]
+        with open(f"{out_dir}/{filename_without_extension}.txt", "w") as f:
             f.write(tags_string)
 
 
