@@ -90,7 +90,7 @@ class Danbooru(DatasetBase):
         tags_query = self.build_tags_query(tags, ng_tags)
         optional_query = self.build_filter_query(ratings, extensions, size)
         return f"""
-        SELECT id, md5, {self.extension_column} FROM posts
+        SELECT id, md5, {self.extension_column}, tags FROM posts
         WHERE {tags_query} AND {optional_query}
         """
 
@@ -124,7 +124,7 @@ class Gelbooru(DatasetBase):
         tags_query = self.build_tags_query(tags, ng_tags)
         filter_query = self.build_filter_query(rating, extensions, size)
         return f"""
-        SELECT id, md5, {self.extension_column} FROM images
+        SELECT id, md5, {self.extension_column}, tags FROM images
         WHERE {tags_query} AND {filter_query}
         """
 
@@ -157,6 +157,9 @@ def main():
     parser.add_argument("-i", "--img", required=True, help="Image directory")
     parser.add_argument("-o", "--out", required=True, help="Output directory")
     parser.add_argument("-c", "--category", help="Gallery-dl category name")
+    parser.add_argument(
+        "--output-tags", action="store_true", help="Output tags to a text file"
+    )
     args = parser.parse_args()
 
     if args.mode == "danbooru":
@@ -179,6 +182,7 @@ def main():
         args.db,
         args.img,
         args.out,
+        args.output_tags,
     )
 
 
@@ -192,6 +196,7 @@ def copy_files(
     db_path: str,
     img_dir: str,
     out_dir: str,
+    output_tags: bool,
 ):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -210,8 +215,17 @@ def copy_files(
             pool.starmap(
                 copy_file,
                 [
-                    (dataset, img_dir, id, out_dir, filename, extension)
-                    for (id, filename, extension) in records
+                    (
+                        dataset,
+                        img_dir,
+                        id,
+                        out_dir,
+                        filename,
+                        extension,
+                        output_tags,
+                        tags_string,
+                    )
+                    for (id, filename, extension, tags_string) in records
                 ],
             )
     conn.close()
@@ -225,11 +239,16 @@ def copy_file(
     out_dir: str,
     filename: str,
     extension: str,
+    output_tags: bool,
+    tags_string: str,
 ):
     src_path = dataset.get_image_path(img_dir, id, filename, extension)
     print(src_path)
     os.makedirs(out_dir, exist_ok=True)
     shutil.copy2(src_path, out_dir)
+    if output_tags:
+        with open(f"{out_dir}/{filename}.txt", "w") as f:
+            f.write(tags_string)
 
 
 if __name__ == "__main__":
