@@ -19,13 +19,14 @@ class DatasetBase(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def get_query(
+    def build_query(
         self,
         tags: list[str],
         ng_tags: Optional[list[str]],
         ratings: Optional[list[str]],
         extensions: Optional[list[str]],
         size: Optional[int],
+        md5_prefix: Optional[list[str]],
     ) -> str:
         pass
 
@@ -49,6 +50,7 @@ class DatasetBase(abc.ABC):
         ratings: Optional[list[str]],
         extensions: Optional[list[str]],
         size: Optional[int],
+        md5_prefix: Optional[list[str]],
     ) -> str:
         if ratings is None:
             ratings_filter = "TRUE"
@@ -67,7 +69,17 @@ class DatasetBase(abc.ABC):
         else:
             size_filter = f"width >= {size} AND height >= {size}"
 
-        return f"({extensions_filter}) AND ({ratings_filter}) AND ({size_filter})"
+        if md5_prefix is None:
+            md5_filter = "TRUE"
+        else:
+            md5_filter = " OR ".join([f"md5 LIKE '{m}%'" for m in md5_prefix])
+
+        return f"""
+        ({extensions_filter}) AND
+        ({ratings_filter}) AND
+        ({size_filter}) AND
+        ({md5_filter})
+        """
 
 
 class Danbooru(DatasetBase):
@@ -79,19 +91,25 @@ class Danbooru(DatasetBase):
     def extension_column(self) -> str:
         return "file_ext"
 
-    def get_query(
+    def build_query(
         self,
         tags: list[str],
         ng_tags: Optional[list[str]],
         ratings: Optional[list[str]],
         extensions: Optional[list[str]],
         size: Optional[int],
+        md5_prefix: Optional[list[str]],
     ) -> str:
         tags_query = self.build_tags_query(tags, ng_tags)
-        optional_query = self.build_filter_query(ratings, extensions, size)
+        filter_query = self.build_filter_query(
+            ratings,
+            extensions,
+            size,
+            md5_prefix,
+        )
         return f"""
         SELECT id, md5, {self.extension_column}, tags FROM posts
-        WHERE {tags_query} AND {optional_query}
+        WHERE {tags_query} AND {filter_query}
         """
 
     def get_image_path(
@@ -113,16 +131,17 @@ class Gelbooru(DatasetBase):
         super().__init__()
         self.category = category
 
-    def get_query(
+    def build_query(
         self,
         tags: list[str],
         ng_tags: Optional[list[str]],
         rating: Optional[list[str]],
         extensions: Optional[list[str]],
         size: Optional[int],
+        md5_prefix: Optional[list[str]],
     ) -> str:
         tags_query = self.build_tags_query(tags, ng_tags)
-        filter_query = self.build_filter_query(rating, extensions, size)
+        filter_query = self.build_filter_query(rating, extensions, size, md5_prefix)
         return f"""
         SELECT id, md5, {self.extension_column}, tags FROM images
         WHERE {tags_query} AND {filter_query}
@@ -136,27 +155,21 @@ class Gelbooru(DatasetBase):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--db", required=True, help="Database file of the dataset")
+    parser.add_argument("--img-dir", required=True, help="Image directory")
+    parser.add_argument("--out-dir", required=True, help="Output directory")
     parser.add_argument(
-        "-m", "--mode", required=True, help="Dataset mode (danbooru or gallery-dl)"
+        "--mode", required=True, help="Dataset mode (danbooru or gallery-dl)"
     )
+    parser.add_argument("--category", help="Gallery-dl category name")
+    parser.add_argument("--tags", required=True, nargs="+", help="Tags to be included")
+    parser.add_argument("--ng-tags", nargs="+", help="Tags to be excluded")
+    parser.add_argument("--ratings", nargs="+", help="Ratings")
+    parser.add_argument("--extensions", nargs="+", help="Extensions")
     parser.add_argument(
-        "-t", "--tags", required=True, nargs="+", help="Tags to be included"
+        "--size", type=int, help="Minimum image size (width and height)"
     )
-    parser.add_argument("-n", "--ng-tags", nargs="+", help="Tags to be excluded")
-    parser.add_argument("-r", "--ratings", nargs="+", help="Ratings")
-    parser.add_argument("-e", "--extensions", nargs="+", help="Extensions")
-    parser.add_argument(
-        "-s",
-        "--size",
-        type=int,
-        help="Minimum image size (width and height)",
-    )
-    parser.add_argument(
-        "-d", "--db", required=True, help="Database file of the dataset"
-    )
-    parser.add_argument("-i", "--img", required=True, help="Image directory")
-    parser.add_argument("-o", "--out", required=True, help="Output directory")
-    parser.add_argument("-c", "--category", help="Gallery-dl category name")
+    parser.add_argument("--md5", nargs="+", help="MD5 prefix")
     parser.add_argument(
         "--output-tags", action="store_true", help="Output tags to a text file"
     )
@@ -174,33 +187,35 @@ def main():
 
     copy_files(
         dataset,
+        args.db,
+        args.img_dir,
+        args.out_dir,
         args.tags,
         args.ng_tags,
         args.ratings,
         args.extensions,
         args.size,
-        args.db,
-        args.img,
-        args.out,
+        args.md5,
         args.output_tags,
     )
 
 
 def copy_files(
     dataset: DatasetBase,
+    db_path: str,
+    img_dir: str,
+    out_dir: str,
     tags: list[str],
     ng_tags: Optional[list[str]],
     ratings: Optional[list[str]],
     extensions: Optional[list[str]],
     size: Optional[int],
-    db_path: str,
-    img_dir: str,
-    out_dir: str,
+    md5_prefix: Optional[list[str]],
     output_tags: bool,
 ):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    query = dataset.get_query(tags, ng_tags, ratings, extensions, size)
+    query = dataset.build_query(tags, ng_tags, ratings, extensions, size, md5_prefix)
     print(query)
     cursor.execute(query)
 
