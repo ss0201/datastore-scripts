@@ -2,9 +2,10 @@ import abc
 import argparse
 import multiprocessing
 import os
-import shutil
 import sqlite3
 from typing import Optional
+
+from util import copy_files_with_same_name
 
 
 class DatasetBase(abc.ABC):
@@ -31,9 +32,9 @@ class DatasetBase(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def get_image_path(
+    def get_image_subdir_and_filename(
         self, img_dir: str, id: int, filename: str, extension: str
-    ) -> str:
+    ) -> tuple[str, str]:
         pass
 
     def build_tags_query(self, tags: list[str], ng_tags: Optional[list[str]]) -> str:
@@ -112,10 +113,10 @@ class Danbooru(DatasetBase):
         WHERE {tags_query} AND {filter_query}
         """
 
-    def get_image_path(
+    def get_image_subdir_and_filename(
         self, img_dir: str, id: int, filename: str, extension: str
-    ) -> str:
-        return f"{img_dir}/{filename[:2]}/{filename}.{extension}"
+    ) -> tuple[str, str]:
+        return filename[:2], f"{filename}.{extension}"
 
 
 class Gelbooru(DatasetBase):
@@ -147,10 +148,10 @@ class Gelbooru(DatasetBase):
         WHERE {tags_query} AND {filter_query}
         """
 
-    def get_image_path(
+    def get_image_subdir_and_filename(
         self, img_dir: str, id: int, filename: str, extension: str
-    ) -> str:
-        return f"{img_dir}/{self.category}_{id}_{filename}.{extension}"
+    ) -> tuple[str, str]:
+        return "", f"{self.category}_{id}_{filename}.{extension}"
 
 
 def main():
@@ -219,12 +220,15 @@ def copy_files(
     print(query)
     cursor.execute(query)
 
+    all_files = set(os.listdir(img_dir))
+    os.makedirs(out_dir, exist_ok=True)
+
     total_record_count = 0
     while True:
         records = cursor.fetchmany(10000)
         if not records:
             break
-        print(f"Copying {len(records)} files...")
+        print(f"Copying {len(records)} images and associated files...")
         total_record_count += len(records)
         with multiprocessing.Pool() as pool:
             pool.starmap(
@@ -233,8 +237,9 @@ def copy_files(
                     (
                         dataset,
                         img_dir,
-                        id,
                         out_dir,
+                        all_files,
+                        id,
                         filename,
                         extension,
                         output_tags,
@@ -244,25 +249,29 @@ def copy_files(
                 ],
             )
     conn.close()
-    print(f"{total_record_count} files copied in total.")
+    print(f"{total_record_count} images and associated files copied.")
 
 
 def copy_file(
     dataset: DatasetBase,
     img_dir: str,
-    id: int,
     out_dir: str,
-    filename: str,
+    available_files: set[str],
+    id: int,
+    raw_filename: str,
     extension: str,
     output_tags: bool,
     tags_string: str,
 ):
-    src_path = dataset.get_image_path(img_dir, id, filename, extension)
-    print(src_path)
-    os.makedirs(out_dir, exist_ok=True)
-    shutil.copy2(src_path, out_dir)
+    subidr, filename = dataset.get_image_subdir_and_filename(
+        img_dir, id, raw_filename, extension
+    )
+    copy_files_with_same_name(
+        filename, os.path.join(img_dir, subidr), out_dir, available_files
+    )
+
     if output_tags:
-        filename_without_extension = os.path.splitext(os.path.basename(src_path))[0]
+        filename_without_extension = os.path.splitext(filename)[0]
         with open(f"{out_dir}/{filename_without_extension}.txt", "w") as f:
             f.write(tags_string)
 

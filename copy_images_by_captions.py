@@ -1,7 +1,8 @@
 import argparse
 import multiprocessing
 import os
-import shutil
+
+from util import copy_files_with_same_name
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -44,16 +45,7 @@ def copy_if_contains_captions(
         captions_in_text_file = f.read()
 
     if all(c in captions_in_text_file for c in captions):
-        shutil.copy2(text_file_path, os.path.join(output_dir, text_file))
-        print(f"Copied file {text_file}")
-
-        base_name_without_ext = os.path.splitext(text_file)[0]
-
-        for file in available_files:
-            if file.startswith(base_name_without_ext) and file != text_file:
-                file_path = os.path.join(input_dir, file)
-                shutil.copy2(file_path, os.path.join(output_dir, file))
-                print(f"Copied file {file}")
+        copy_files_with_same_name(text_file, input_dir, output_dir, available_files)
 
 
 def process_files(input_dir: str, output_dir: str, captions: list[str]) -> None:
